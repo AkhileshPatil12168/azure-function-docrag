@@ -58,13 +58,10 @@
 </div>
 
 <script>
-
+let url = "https://doc-rag-intelligence.cognitiveservices.azure.com"
 // Redirect user to login
 function login() {
-  window.open(
-    "https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/auth/start",
-    "_blank"
-  );
+window.location.href = `${url}/api/sharepoint/auth/start`;
 }
 
 // =========================
@@ -74,7 +71,7 @@ async function loadSites() {
   try {
     toggle("siteLoader", true);
 
-    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/sites");
+    const res = await fetch(`${url}/api/sharepoint/ui/sites`);
     const data = await res.json();
 
     const select = document.getElementById("sites");
@@ -116,7 +113,7 @@ async function loadDrives(siteId) {
     toggle("driveLoader", true);
 
     const res = await fetch(
-      `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/drives?site_id=${encodeURIComponent(siteId)}`
+      `${url}/api/sharepoint/ui/drives?site_id=${encodeURIComponent(siteId)}`
     );
 
     const data = await res.json();
@@ -162,7 +159,7 @@ async function loadPDFs(driveId) {
     toggle("pdfLoader", true);
 
     const res = await fetch(
-      `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/pdfs?drive_id=${encodeURIComponent(driveId)}`
+      `${url}/api/sharepoint/ui/pdfs?drive_id=${encodeURIComponent(driveId)}`
     );
 
     const data = await res.json();
@@ -195,7 +192,7 @@ function preview() {
   if (!itemId) return;
 
   document.getElementById("viewer").src =
-    `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/preview?drive_id=${driveId}&item_id=${itemId}`;
+    `${url}/api/sharepoint/preview?drive_id=${driveId}&item_id=${itemId}`;
 
   document.getElementById("processBtn").disabled = false;
 }
@@ -211,7 +208,7 @@ async function process() {
     const driveId = document.getElementById("drives").value;
     const itemId = document.getElementById("pdfs").value;
 
-    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/process", {
+    const res = await fetch(`${url}/api/sharepoint/process`, {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ drive_id: driveId, item_id: itemId })
@@ -237,7 +234,7 @@ async function ask() {
 
     const q = document.getElementById("question").value;
 
-    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ask", {
+    const res = await fetch(`${url}/api/sharepoint/ask`, {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({question:q})

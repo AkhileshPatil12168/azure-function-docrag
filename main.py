@@ -8,7 +8,7 @@ from sharepoint_api import router
 app = FastAPI()
 
 # Session (required for login)
-app.add_middleware(SessionMiddleware, secret_key="poc-demo-for-rag-chatbot")
+app.add_middleware(SessionMiddleware, secret_key="poc-demo-for-rag-chatbot",session_cookie="session",)
 
 # CORS (safe for POC)
 app.add_middleware(
