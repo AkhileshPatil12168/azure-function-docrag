@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI SharePoint Assistant</title>
+  <style>
+    body { font-family: Arial; background:#f3f4f6; padding:20px; }
+    .card { background:white; padding:20px; margin:10px 0; border-radius:10px; }
+    button { padding:10px; background:#4f46e5; color:white; border:none; border-radius:5px; cursor:pointer; }
+    button:disabled { background:#999; cursor:not-allowed; }
+    select,input { width:100%; padding:8px; margin:5px 0; }
+    iframe { width:100%; height:400px; border:1px solid #ddd; }
+    .loader { display:none; color:#4f46e5; }
+  </style>
+</head>
+
+<body>
+
+<h2>AI SharePoint Assistant</h2>
+
+<div class="card">
+  <button onclick="login()">Login to SharePoint</button>
+</div>
+
+<div class="card">
+  <h3>Select Site</h3>
+  <p id="siteLoader" class="loader">Loading sites...</p>
+  <select id="sites" onchange="onSiteChange()"></select>
+</div>
+
+<div class="card">
+  <h3>Select Drive</h3>
+  <p id="driveLoader" class="loader">Loading drives...</p>
+  <select id="drives" onchange="onDriveChange()" disabled></select>
+</div>
+
+<div class="card">
+  <h3>Select PDF</h3>
+  <p id="pdfLoader" class="loader">Loading PDFs...</p>
+  <select id="pdfs" onchange="preview()" disabled></select>
+</div>
+
+<div class="card">
+  <h3>Preview</h3>
+  <iframe id="viewer"></iframe>
+</div>
+
+<div class="card">
+  <button id="processBtn" onclick="process()" disabled>Process Document</button>
+  <p id="processLoader" class="loader">Processing document...</p>
+  <p id="status"></p>
+</div>
+
+<div class="card">
+  <input id="question" placeholder="Ask question"/>
+  <button id="askBtn" onclick="ask()">Ask</button>
+  <p id="askLoader" class="loader">Generating answer...</p>
+  <p id="answer"></p>
+</div>
+
+<script>
+
+// Redirect user to login
+function login() {
+  window.open(
+    "https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/auth/start",
+    "_blank"
+  );
+}
+
+// =========================
+// LOAD SITES
+// =========================
+async function loadSites() {
+  try {
+    toggle("siteLoader", true);
+
+    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/sites");
+    const data = await res.json();
+
+    const select = document.getElementById("sites");
+    select.innerHTML = "<option value=''>Select site</option>";
+
+    data.sites.forEach(s => {
+      select.innerHTML += `<option value="${s.id}">${s.name}</option>`;
+    });
+
+  } catch (e) {
+    alert("Failed to load sites");
+  } finally {
+    toggle("siteLoader", false);
+  }
+}
+
+
+// =========================
+// SITE CHANGE
+// =========================
+function onSiteChange() {
+  const siteId = document.getElementById("sites").value;
+
+  reset("drives");
+  reset("pdfs");
+  clearPreview();
+
+  if (!siteId) return;
+
+  loadDrives(siteId);
+}
+
+
+// =========================
+// LOAD DRIVES
+// =========================
+async function loadDrives(siteId) {
+  try {
+    toggle("driveLoader", true);
+
+    const res = await fetch(
+      `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/drives?site_id=${encodeURIComponent(siteId)}`
+    );
+
+    const data = await res.json();
+
+    if (!data.drives) throw new Error();
+
+    const select = document.getElementById("drives");
+    select.disabled = false;
+    select.innerHTML = "<option value=''>Select drive</option>";
+
+    data.drives.forEach(d => {
+      select.innerHTML += `<option value="${d.id}">${d.name}</option>`;
+    });
+
+  } catch (e) {
+    alert("Failed to load drives");
+  } finally {
+    toggle("driveLoader", false);
+  }
+}
+
+
+// =========================
+// DRIVE CHANGE
+// =========================
+function onDriveChange() {
+  const driveId = document.getElementById("drives").value;
+
+  reset("pdfs");
+  clearPreview();
+
+  if (!driveId) return;
+
+  loadPDFs(driveId);
+}
+
+
+// =========================
+// LOAD PDFs
+// =========================
+async function loadPDFs(driveId) {
+  try {
+    toggle("pdfLoader", true);
+
+    const res = await fetch(
+      `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ui/pdfs?drive_id=${encodeURIComponent(driveId)}`
+    );
+
+    const data = await res.json();
+
+    if (!data.files) throw new Error();
+
+    const select = document.getElementById("pdfs");
+    select.disabled = false;
+    select.innerHTML = "<option value=''>Select PDF</option>";
+
+    data.files.forEach(f => {
+      select.innerHTML += `<option value="${f.id}">${f.name}</option>`;
+    });
+
+  } catch (e) {
+    alert("Failed to load PDFs");
+  } finally {
+    toggle("pdfLoader", false);
+  }
+}
+
+
+// =========================
+// PREVIEW PDF
+// =========================
+function preview() {
+  const driveId = document.getElementById("drives").value;
+  const itemId = document.getElementById("pdfs").value;
+
+  if (!itemId) return;
+
+  document.getElementById("viewer").src =
+    `https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/preview?drive_id=${driveId}&item_id=${itemId}`;
+
+  document.getElementById("processBtn").disabled = false;
+}
+
+
+// =========================
+// PROCESS DOCUMENT
+// =========================
+async function process() {
+  try {
+    toggle("processLoader", true);
+
+    const driveId = document.getElementById("drives").value;
+    const itemId = document.getElementById("pdfs").value;
+
+    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/process", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ drive_id: driveId, item_id: itemId })
+    });
+
+    const text = await res.text();
+    document.getElementById("status").innerText = text;
+
+  } catch (e) {
+    alert("Processing failed");
+  } finally {
+    toggle("processLoader", false);
+  }
+}
+
+
+// =========================
+// ASK QUESTION
+// =========================
+async function ask() {
+  try {
+    toggle("askLoader", true);
+
+    const q = document.getElementById("question").value;
+
+    const res = await fetch("https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net//api/sharepoint/ask", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({question:q})
+    });
+
+    const ans = await res.text();
+    document.getElementById("answer").innerText = ans;
+
+  } catch (e) {
+    alert("Failed to get answer");
+  } finally {
+    toggle("askLoader", false);
+  }
+}
+
+
+// =========================
+// UTIL FUNCTIONS
+// =========================
+
+function toggle(id, show) {
+  document.getElementById(id).style.display = show ? "block" : "none";
+}
+
+function reset(id) {
+  const el = document.getElementById(id);
+  el.innerHTML = "<option value=''>Select</option>";
+  el.disabled = true;
+}
+
+function clearPreview() {
+  document.getElementById("viewer").src = "";
+  document.getElementById("processBtn").disabled = true;
+}
+
+
+// Initial load
+loadSites();
+
+</script>
+
+</body>
+</html>
