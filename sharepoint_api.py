@@ -141,7 +141,7 @@ def auth_callback(request: Request, code: Optional[str] = None):
     request.session["expires_in"] = token_result.get("expires_in")
 
     # 🔥 Redirect to homepage
-    return RedirectResponse(url="https://doc-rag-intelligence.cognitiveservices.azure.com")
+    return RedirectResponse(url="poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net")
 
 @router.get("/token")
 def get_token():
