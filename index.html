@@ -18,10 +18,6 @@
 <h2>AI SharePoint Assistant</h2>
 
 <div class="card">
-  <button onclick="login()">Login to SharePoint</button>
-</div>
-
-<div class="card">
   <h3>Select Site</h3>
   <p id="siteLoader" class="loader">Loading sites...</p>
   <select id="sites" onchange="onSiteChange()"></select>
@@ -34,69 +30,56 @@
 </div>
 
 <div class="card">
-  <h3>Select PDF</h3>
-  <p id="pdfLoader" class="loader">Loading PDFs...</p>
-  <select id="pdfs" onchange="preview()" disabled></select>
+  <h3>Select File</h3>
+  <p id="fileLoader" class="loader">Loading files...</p>
+  <select id="files" onchange="preview()" disabled></select>
 </div>
 
 <div class="card">
-  <h3>Preview</h3>
+  <h3>Preview (PDF only)</h3>
   <iframe id="viewer"></iframe>
 </div>
 
 <div class="card">
-  <button id="processBtn" onclick="process()" disabled>Process Document</button>
-  <p id="processLoader" class="loader">Processing document...</p>
+  <button id="processBtn" onclick="process()" disabled>Process File</button>
+  <p id="processLoader" class="loader">Processing file...</p>
   <p id="status"></p>
 </div>
 
 <div class="card">
   <input id="question" placeholder="Ask question"/>
-  <button id="askBtn" onclick="ask()">Ask</button>
+  <button onclick="ask()">Ask</button>
   <p id="askLoader" class="loader">Generating answer...</p>
   <p id="answer"></p>
 </div>
 
 <script>
-let url = "https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net"
-// Redirect user to login
-function login() {
-window.location.href = `${url}/api/sharepoint/auth/start`;
-}
 
-// =========================
+let url = window.location.origin;
+
 // LOAD SITES
-// =========================
 async function loadSites() {
-  try {
-    toggle("siteLoader", true);
+  toggle("siteLoader", true);
 
-    const res = await fetch(`${url}/api/sharepoint/ui/sites`);
-    const data = await res.json();
+  const res = await fetch(`${url}/api/sharepoint/ui/sites`);
+  const data = await res.json();
 
-    const select = document.getElementById("sites");
-    select.innerHTML = "<option value=''>Select site</option>";
+  const select = document.getElementById("sites");
+  select.innerHTML = "<option value=''>Select site</option>";
 
-    data.sites.forEach(s => {
-      select.innerHTML += `<option value="${s.id}">${s.name}</option>`;
-    });
+  data.sites.forEach(s => {
+    select.innerHTML += `<option value="${s.id}">${s.name}</option>`;
+  });
 
-  } catch (e) {
-    alert("Failed to load sites");
-  } finally {
-    toggle("siteLoader", false);
-  }
+  toggle("siteLoader", false);
 }
 
-
-// =========================
 // SITE CHANGE
-// =========================
 function onSiteChange() {
   const siteId = document.getElementById("sites").value;
 
   reset("drives");
-  reset("pdfs");
+  reset("files");
   clearPreview();
 
   if (!siteId) return;
@@ -104,157 +87,110 @@ function onSiteChange() {
   loadDrives(siteId);
 }
 
-
-// =========================
 // LOAD DRIVES
-// =========================
 async function loadDrives(siteId) {
-  try {
-    toggle("driveLoader", true);
+  toggle("driveLoader", true);
 
-    const res = await fetch(
-      `${url}/api/sharepoint/ui/drives?site_id=${encodeURIComponent(siteId)}`
-    );
+  const res = await fetch(`${url}/api/sharepoint/ui/drives?site_id=${encodeURIComponent(siteId)}`);
+  const data = await res.json();
 
-    const data = await res.json();
+  const select = document.getElementById("drives");
+  select.disabled = false;
+  select.innerHTML = "<option value=''>Select drive</option>";
 
-    if (!data.drives) throw new Error();
+  data.drives.forEach(d => {
+    select.innerHTML += `<option value="${d.id}">${d.name}</option>`;
+  });
 
-    const select = document.getElementById("drives");
-    select.disabled = false;
-    select.innerHTML = "<option value=''>Select drive</option>";
-
-    data.drives.forEach(d => {
-      select.innerHTML += `<option value="${d.id}">${d.name}</option>`;
-    });
-
-  } catch (e) {
-    alert("Failed to load drives");
-  } finally {
-    toggle("driveLoader", false);
-  }
+  toggle("driveLoader", false);
 }
 
-
-// =========================
 // DRIVE CHANGE
-// =========================
 function onDriveChange() {
   const driveId = document.getElementById("drives").value;
 
-  reset("pdfs");
+  reset("files");
   clearPreview();
 
   if (!driveId) return;
 
-  loadPDFs(driveId);
+  loadFiles(driveId);
 }
 
+// LOAD FILES
+async function loadFiles(driveId) {
+  toggle("fileLoader", true);
 
-// =========================
-// LOAD PDFs
-// =========================
-async function loadPDFs(driveId) {
-  try {
-    toggle("pdfLoader", true);
+  const res = await fetch(`${url}/api/sharepoint/ui/files?drive_id=${encodeURIComponent(driveId)}`);
+  const data = await res.json();
 
-    const res = await fetch(
-      `${url}/api/sharepoint/ui/pdfs?drive_id=${encodeURIComponent(driveId)}`
-    );
+  const select = document.getElementById("files");
+  select.disabled = false;
+  select.innerHTML = "<option value=''>Select file</option>";
 
-    const data = await res.json();
+  data.files.forEach(f => {
+    select.innerHTML += `<option value="${f.id}">${f.name}</option>`;
+  });
 
-    if (!data.files) throw new Error();
-
-    const select = document.getElementById("pdfs");
-    select.disabled = false;
-    select.innerHTML = "<option value=''>Select PDF</option>";
-
-    data.files.forEach(f => {
-      select.innerHTML += `<option value="${f.id}">${f.name}</option>`;
-    });
-
-  } catch (e) {
-    alert("Failed to load PDFs");
-  } finally {
-    toggle("pdfLoader", false);
-  }
+  toggle("fileLoader", false);
 }
 
-
-// =========================
-// PREVIEW PDF
-// =========================
+// PREVIEW (PDF ONLY)
 function preview() {
   const driveId = document.getElementById("drives").value;
-  const itemId = document.getElementById("pdfs").value;
+  const itemId = document.getElementById("files").value;
+  const fileName = document.getElementById("files").selectedOptions[0]?.text || "";
 
   if (!itemId) return;
 
-  document.getElementById("viewer").src =
-    `${url}/api/sharepoint/preview?drive_id=${driveId}&item_id=${itemId}`;
+  if (fileName.toLowerCase().endsWith(".pdf")) {
+    document.getElementById("viewer").src =
+      `${url}/api/sharepoint/preview?drive_id=${driveId}&item_id=${itemId}`;
+  } else {
+    document.getElementById("viewer").src = "";
+  }
 
   document.getElementById("processBtn").disabled = false;
 }
 
-
-// =========================
-// PROCESS DOCUMENT
-// =========================
+// PROCESS FILE
 async function process() {
-  try {
-    toggle("processLoader", true);
+  toggle("processLoader", true);
 
-    const driveId = document.getElementById("drives").value;
-    const itemId = document.getElementById("pdfs").value;
+  const driveId = document.getElementById("drives").value;
+  const itemId = document.getElementById("files").value;
 
-    const res = await fetch(`${url}/api/sharepoint/process`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ drive_id: driveId, item_id: itemId })
-    });
+  const res = await fetch(`${url}/api/sharepoint/process`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ drive_id: driveId, item_id: itemId })
+  });
 
-    const text = await res.text();
-    document.getElementById("status").innerText = text;
+  const data = await res.json();
+  document.getElementById("status").innerText = data.message || "Done";
 
-  } catch (e) {
-    alert("Processing failed");
-  } finally {
-    toggle("processLoader", false);
-  }
+  toggle("processLoader", false);
 }
 
-
-// =========================
-// ASK QUESTION
-// =========================
+// ASK
 async function ask() {
-  try {
-    toggle("askLoader", true);
+  toggle("askLoader", true);
 
-    const q = document.getElementById("question").value;
+  const q = document.getElementById("question").value;
 
-    const res = await fetch(`${url}/api/sharepoint/ask`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({question:q})
-    });
+  const res = await fetch(`${url}/api/sharepoint/ask`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({question:q})
+  });
 
-    const ans = await res.text();
-    document.getElementById("answer").innerText = ans;
+  const data = await res.json();
+  document.getElementById("answer").innerText = data.answer || "No answer";
 
-  } catch (e) {
-    alert("Failed to get answer");
-  } finally {
-    toggle("askLoader", false);
-  }
+  toggle("askLoader", false);
 }
 
-
-// =========================
-// UTIL FUNCTIONS
-// =========================
-
+// UTIL
 function toggle(id, show) {
   document.getElementById(id).style.display = show ? "block" : "none";
 }
@@ -270,8 +206,7 @@ function clearPreview() {
   document.getElementById("processBtn").disabled = true;
 }
 
-
-// Initial load
+// INIT
 loadSites();
 
 </script>

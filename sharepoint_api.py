@@ -4,12 +4,10 @@ load_dotenv()
 import os
 import logging
 from typing import Optional, Dict, Any
-
-import msal
+import time
 import requests
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse, Response
-from fastapi import Request
+from fastapi.responses import Response
 
 from openai import AzureOpenAI
 from azure.search.documents import SearchClient
@@ -22,22 +20,87 @@ logger = logging.getLogger("sharepoint_api")
 
 router = APIRouter(prefix="/api/sharepoint", tags=["sharepoint"])
 
-# In-memory token (POC purpose)
-ACCESS_TOKEN = None
+# =========================
+# ENV CONFIG
+# =========================
+TENANT_ID = os.getenv("MS_TENANT_ID")
+CLIENT_ID = os.getenv("MS_CLIENT_ID")
+CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 
-# Environment config
-TENANT_ID = os.getenv("MS_TENANT_ID", "")
-CLIENT_ID = os.getenv("MS_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET", "")
-REDIRECT_URI = os.getenv("MS_REDIRECT_URI", "")
-
-SCOPES = ["User.Read", "Sites.Read.All", "Files.Read.All"]
-AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+# =========================
+# TOKEN CACHE
+# =========================
+ACCESS_TOKEN = None
+TOKEN_EXPIRY = 0
 
 
+def get_access_token():
+    global ACCESS_TOKEN, TOKEN_EXPIRY
 
-# Initialize clients once
+    if ACCESS_TOKEN and time.time() < TOKEN_EXPIRY:
+        return ACCESS_TOKEN
+
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scope": "https://graph.microsoft.com/.default",
+        "grant_type": "client_credentials"
+    }
+
+    res = requests.post(TOKEN_URL, data=data)
+
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to get access token")
+
+    token_json = res.json()
+    ACCESS_TOKEN = token_json["access_token"]
+    TOKEN_EXPIRY = time.time() + int(token_json.get("expires_in", 3599)) - 60
+
+    return ACCESS_TOKEN
+
+
+# =========================
+# GRAPH HELPER (WITH RETRY)
+# =========================
+def _graph_get_full(url: str):
+    while url:
+        token = get_access_token()
+
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+
+        if res.status_code == 401:
+            token = get_access_token()
+            res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+
+        if res.status_code >= 400:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+
+        data = res.json()
+        yield data
+        url = data.get("@odata.nextLink")
+
+
+def _graph_get(path: str, params: Optional[Dict[str, str]] = None):
+    token = get_access_token()
+
+    res = requests.get(
+        f"{GRAPH_BASE}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params
+    )
+
+    if res.status_code >= 400:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
+    return res.json()
+
+
+# =========================
+# AI CLIENTS
+# =========================
 openai_client = AzureOpenAI(
     api_key=os.environ["OPENAI_API_KEY"],
     api_version="2024-02-01",
@@ -56,130 +119,26 @@ doc_client = DocumentAnalysisClient(
 )
 
 
-# Create MSAL app for authentication
-def _msal_app():
-    if not (TENANT_ID and CLIENT_ID and CLIENT_SECRET and REDIRECT_URI):
-        raise RuntimeError("Missing MS_* environment variables")
-
-    return msal.ConfidentialClientApplication(
-        client_id=CLIENT_ID,
-        client_credential=CLIENT_SECRET,
-        authority=AUTHORITY,
-    )
-
-
-# Generic helper to call Microsoft Graph API
-def _graph_get(token: str, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    url = f"{GRAPH_BASE}{path}"
-
-    res = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        params=params,
-        timeout=60
-    )
-
-    if res.status_code >= 400:
-        raise HTTPException(status_code=res.status_code, detail=res.text)
-
-    return res.json()
-
-
-# Ensure user is logged in
-def _require_token(request: Request):
-    token = request.session.get("access_token")
-
-    if not token:
-        raise HTTPException(status_code=401, detail="Not logged in")
-
-    return token
-
-
 # =========================
-# AUTH APIs
-# =========================
-
-@router.get("/auth/start")
-def auth_start():
-    """
-    Redirects user to Microsoft login page
-    """
-    app = _msal_app()
-
-    auth_url = app.get_authorization_request_url(
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-        prompt="select_account",
-    )
-
-    return RedirectResponse(auth_url)
-
-
-
-
-
-
-@router.get("/auth/callback")
-def auth_callback(request: Request, code: Optional[str] = None):
-
-    if not code:
-        raise HTTPException(status_code=400, detail="Missing code")
-
-    app = _msal_app()
-
-    token_result = app.acquire_token_by_authorization_code(
-        code=code,
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
-
-    if "error" in token_result:
-        raise HTTPException(status_code=400, detail="Token exchange failed")
-
-    # Save token in session
-    request.session["access_token"] = token_result.get("access_token")
-    request.session["expires_in"] = token_result.get("expires_in")
-
-    # 🔥 Redirect to homepage
-    return RedirectResponse(url="https://poc-doc-rag-chatbot-evgtb8cfdhevd9cg.eastus-01.azurewebsites.net")
-
-@router.get("/token")
-def get_token():
-    """
-    Returns current access token (used by Azure Function)
-    """
-    return {"access_token": ACCESS_TOKEN}
-
-
-# =========================
-# UI APIs (Used by frontend)
+# UI APIs
 # =========================
 
 @router.get("/ui/sites")
-def ui_sites(request: Request):
-    """
-    Fetch all SharePoint sites
-    """
-    token = _require_token(request)
-
-    data = _graph_get(token, "/sites", params={"search": "*"})
-
+def ui_sites():
+    # 🔥 directly return your known site
     return {
         "sites": [
-            {"id": s["id"], "name": s.get("displayName", "No Name")}
-            for s in data.get("value", [])
+            {
+                "id": "wearelucidgroup.sharepoint.com,708eb9a3-40f8-4f89-bff2-7c71f236edf7,1fa59446-f30d-4f1c-9623-d49b13cc8746",
+                "name": "Team DeUS AI Development"
+            }
         ]
     }
 
 
 @router.get("/ui/drives")
-def ui_drives(request: Request, site_id: str = Query(...)):
-    """
-    Fetch document libraries (drives) for selected site
-    """
-    token = _require_token(request)
-
-    data = _graph_get(token, f"/sites/{site_id}/drives")
+def ui_drives(site_id: str = Query(...)):
+    data = _graph_get(f"/sites/{site_id}/drives")
 
     return {
         "drives": [
@@ -189,107 +148,170 @@ def ui_drives(request: Request, site_id: str = Query(...)):
     }
 
 
-@router.get("/ui/pdfs")
-def ui_pdfs(request: Request, drive_id: str = Query(...) ):
-    """
-    Recursively fetch all PDF files inside a drive
-    """
-    token = _require_token(request)
-    pdfs = _find_all_pdfs(token, drive_id)
-
-    return {"files": pdfs}
+@router.get("/ui/files")
+def ui_files(drive_id: str = Query(...)):
+    files = _find_all_files(drive_id)
+    return {"files": files}
 
 
 # =========================
 # FILE HANDLING
 # =========================
 
-def _find_all_pdfs(token, drive_id, folder_id=None):
-    """
-    Recursively traverse folders and collect all PDF files
-    """
+def _find_all_files(drive_id, folder_id=None):
     results = []
 
     if folder_id:
-        url = f"/drives/{drive_id}/items/{folder_id}/children"
+        url = f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_id}/children"
     else:
-        url = f"/drives/{drive_id}/root/children"
+        url = f"{GRAPH_BASE}/drives/{drive_id}/root/children"
 
-    data = _graph_get(token, url)
+    for data in _graph_get_full(url):
+        for item in data.get("value", []):
 
-    for item in data.get("value", []):
-        name = item.get("name", "").lower()
+            # 🔥 FILE
+            if "file" in item:
+                results.append({
+                    "name": item["name"],
+                    "id": item["id"],
+                    "mimeType": item["file"].get("mimeType", "")
+                })
 
-        # If file and PDF
-        if "file" in item and name.endswith(".pdf"):
-            results.append({
-                "name": item["name"],
-                "id": item["id"]
-            })
-
-        # If folder → go deeper
-        elif "folder" in item:
-            results.extend(_find_all_pdfs(token, drive_id, item["id"]))
+            # 🔁 FOLDER
+            elif "folder" in item:
+                results.extend(_find_all_files(drive_id, item["id"]))
 
     return results
 
-
-@router.get("/preview")
-def preview_file(drive_id: str, item_id: str, request: Request):
-    """
-    Returns PDF file stream for preview in browser
-    """
-    token = _require_token(request)
-
-    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/content"
-
-    res = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"}
-    )
-
-    return Response(content=res.content, media_type="application/pdf")
-
-@router.post("/process")
-def process_pdf(data: dict, request: Request):
-    """
-    Downloads PDF from SharePoint, extracts text,
-    creates embeddings, and stores in AI Search
-    """
-
-    drive_id = data.get("drive_id")
-    item_id = data.get("item_id")
-
-    token = _require_token(request)
-
-    # Step 1: Download file
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/content"
-
-    res = requests.get(url, headers={
-        "Authorization": f"Bearer {token}"
-    })
-
-    file_bytes = res.content
-
-    # Step 2: Extract text
-    poller = doc_client.begin_analyze_document(
-        model_id="prebuilt-layout",
-        document=file_bytes
-    )
-    result = poller.result()
-    text = result.content or ""
-
-    if not text:
-        return {"error": "No text extracted"}
-
-    # Step 3: Chunk
+def chunk_text(text, chunk_size=500, overlap=100):
     words = text.split()
     chunks = []
 
-    for i in range(0, len(words), 150):
-        chunks.append(" ".join(words[i:i+150]))
+    i = 0
+    while i < len(words):
+        chunk = words[i:i + chunk_size]
+        chunks.append(" ".join(chunk))
+        i += chunk_size - overlap
 
-    # Step 4: Create embeddings
+    return chunks
+
+
+@router.get("/preview")
+def preview_file(drive_id: str, item_id: str):
+    token = get_access_token()
+
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/content"
+
+    res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+
+    return Response(content=res.content, media_type="application/pdf")
+
+
+@router.post("/process")
+def process_file(data: dict):
+    drive_id = data.get("drive_id")
+    item_id = data.get("item_id")
+
+    token = get_access_token()
+
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}/content"
+
+    res = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+    file_bytes = res.content
+    content_type = res.headers.get("Content-Type", "")
+
+    text = ""
+
+    # =========================
+    # PDF / IMAGE
+    # =========================
+    if "pdf" in content_type or "image" in content_type:
+        poller = doc_client.begin_analyze_document(
+            model_id="prebuilt-layout",
+            document=file_bytes
+        )
+        result = poller.result()
+        text = result.content or ""
+
+    # =========================
+    # TEXT FILE
+    # =========================
+    elif "text" in content_type:
+        text = file_bytes.decode("utf-8", errors="ignore")
+
+    # =========================
+    # DOCX
+    # =========================
+    elif "wordprocessingml" in content_type:
+        from docx import Document
+        import io
+
+        doc = Document(io.BytesIO(file_bytes))
+        text = "\n".join([p.text for p in doc.paragraphs])
+
+    # =========================
+    # CSV
+    # =========================
+    elif "csv" in content_type:
+        import pandas as pd
+        import io
+
+        df = pd.read_csv(io.BytesIO(file_bytes))
+        text = df.to_string()
+
+    # =========================
+    # PPTX
+    # =========================
+    elif "presentationml" in content_type:
+        from pptx import Presentation
+        import io
+
+        prs = Presentation(io.BytesIO(file_bytes))
+        slides_text = []
+
+        for slide in prs.slides:
+            slide_content = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    slide_content.append(shape.text)
+            slides_text.append(" ".join(slide_content))
+
+        text = "\n".join(slides_text)
+
+    # =========================
+    # XLSX
+    # =========================
+    elif "spreadsheetml" in content_type:
+        import pandas as pd
+        import io
+
+        try:
+            excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
+            sheets_text = []
+
+            for sheet in excel_file.sheet_names:
+                df = excel_file.parse(sheet)
+                sheets_text.append(f"Sheet: {sheet}\n{df.to_string()}")
+
+            text = "\n\n".join(sheets_text)
+
+        except Exception as e:
+            return {"error": f"Excel parsing failed: {str(e)}"}
+
+    # =========================
+    # UNSUPPORTED
+    # =========================
+    else:
+        return {"error": f"Unsupported file type: {content_type}"}
+
+    if not text.strip():
+        return {"error": "No text extracted"}
+
+    # =========================
+    # CHUNKING
+    # =========================
+    chunks = chunk_text(text)
+
     documents = []
 
     for chunk in chunks:
@@ -305,47 +327,82 @@ def process_pdf(data: dict, request: Request):
             "embedding": embedding
         })
 
-    # Step 5: Store in AI Search
     search_client.upload_documents(documents)
 
-    return {"message": f"Processed {len(chunks)} chunks"}
+    return {
+        "message": f"Processed {len(chunks)} chunks",
+        "type": content_type
+    }
+
+@router.post("/process-all")
+def process_all(drive_id: str):
+    pdfs = _find_all_pdfs(drive_id)
+
+    results = []
+
+    for pdf in pdfs:
+        try:
+            process_pdf({
+                "drive_id": drive_id,
+                "item_id": pdf["id"]
+            })
+            results.append(pdf["name"])
+        except Exception as e:
+            logger.error(f"Failed: {pdf['name']}")
+
+    return {"processed": results}
+
 
 @router.post("/ask")
-def ask_ai(data: dict, request: Request):
-    """
-    Performs RAG search + GPT answer
-    """
-
+def ask_ai(data: dict):
     question = data.get("question")
 
     if not question:
         return {"error": "Missing question"}
 
-    # Step 1: Embed question
     query_embedding = openai_client.embeddings.create(
         model="text-embedding-3-large",
         input=question
     ).data[0].embedding
 
-    # Step 2: Search
     vector_query = VectorizedQuery(
         vector=query_embedding,
-        k_nearest_neighbors=3,
+        k_nearest_neighbors=5,
         fields="embedding"
     )
 
     results = search_client.search(
-        search_text=None,
-        vector_queries=[vector_query]
-    )
+        search_text=question,                      #  BM25
+        vector_queries=[vector_query],            #  Vector
+        top=5,
+        query_type="semantic",                    #  Semantic ranking
+        semantic_configuration_name="default"     #  MUST match Azure config
+)
 
-    context = "\n".join([r["content"] for r in results])
+    context = ""
 
-    # Step 3: GPT answer
+    for r in results:
+        content = r.get("content", "")
+        source = r.get("fileName", "unknown")
+        score = r.get("@search.score", "")
+
+        context += f"\n[Source: {source} | Score: {score}]\n{content}\n"
+
     response = openai_client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Answer only using context"},
+            {
+              "role": "system",
+              "content": """
+            You are an AI assistant.
+            Answer ONLY using the provided context.
+
+            Rules:
+            - If answer not found, say "Not found in documents"
+            - Always mention source file names
+            - Be precise and structured
+            """
+            },
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion:{question}"}
         ]
     )
