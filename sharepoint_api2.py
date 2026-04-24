@@ -475,31 +475,32 @@
 
 #     # Step 2: Tool execution
 #     if message.tool_calls:
-#         tool_call = message.tool_calls[0]
-#         tool_name = tool_call.function.name
-#         arguments = json.loads(tool_call.function.arguments)
 
-#         if tool_name == "search_sharepoint":
-#             tool_result = search_sharepoint_tool(arguments["query"])
-
-#         elif tool_name == "query_data":
-#             tool_result = query_data_tool(arguments["query"])
-
-#         # Add tool result
 #         messages.append(message)
-#         messages.append({
-#             "role": "tool",
-#             "tool_call_id": tool_call.id,
-#             "content": tool_result
-#         })
 
-#         # Step 3: Final answer
+#         for tool_call in message.tool_calls:
+#             tool_name = tool_call.function.name
+#             arguments = json.loads(tool_call.function.arguments)
+
+#             if tool_name == "search_sharepoint":
+#                 tool_result = search_sharepoint_tool(arguments["query"])
+
+#             elif tool_name == "query_data":
+#                 tool_result = query_data_tool(arguments["query"])
+
+#             else:
+#                 tool_result = "Unknown tool"
+
+#             messages.append({
+#                 "role": "tool",
+#                 "tool_call_id": tool_call.id,
+#                 "content": tool_result
+#             })
+
+#     # Final response after ALL tools
 #         final_response = openai_client.chat.completions.create(
 #             model="gpt-4o",
 #             messages=messages
 #         )
 
 #         return {"answer": final_response.choices[0].message.content}
-
-#     # If no tool used
-#     return {"answer": message.content}
